@@ -281,6 +281,9 @@ async fn main() {
 
 	// Browse user profile
 	app
+		.at("/u/:name.rss")
+		.get(|r| async move { Ok(redirect(&format!("/user/{}.rss", r.param("name").unwrap_or_default()))) }.boxed());
+	app
 		.at("/u/:name")
 		.get(|r| async move { Ok(redirect(&format!("/user/{}", r.param("name").unwrap_or_default()))) }.boxed());
 	app.at("/u/:name/comments/:id/:title").get(|r| post::item(r).boxed());

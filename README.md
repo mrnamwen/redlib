@@ -158,7 +158,7 @@ For transparency, I hope to describe all the ways Redlib handles user privacy.
 
 - **Logging:** In production (when running the binary, hosting with docker, or using the official instances), Redlib logs nothing. When debugging (running from source without `--release`), Redlib logs post IDs fetched to aid with troubleshooting.
 
-- **Cookies:** Redlib uses optional cookies to store any configured settings in the settings menu. These are not cross-site cookies and the cookies hold no personal data.
+- **Preferences storage:** By default, Redlib uses optional browser cookies to store settings. If `REDLIB_PREFERENCES_PATH` is set, preferences are saved server-side at that path and shared across browsers.
 
 ---
 
@@ -416,7 +416,9 @@ Assign a default value for each instance-specific setting by passing environment
 | `PUSHSHIFT_FRONTEND`      | String          | `undelete.pullpush.io` | Allows the server to set the Pushshift frontend to be used with "removed" links.                          |
 | `PORT`                    | Integer 0-65535 | `8080`                 | The **internal** port Redlib listens on.                                                                  |
 | `ENABLE_RSS`              | `["on", "off"]` | `off`                  | Enables RSS feed generation.                                                                              |
-| `FULL_URL`                | String          | (empty)                | Allows for proper URLs (for now, only needed by RSS)
+| `PREFERENCES_PATH`        | String          | (empty)                | Optional file path to persist user preferences on disk (single-user/shared-browser setups).              |
+| `FULL_URL`                | String          | (empty)                | Allows for proper URLs (for now, only needed by RSS).                                                     |
+
 ## Default user settings
 
 Assign a default value for each user-modifiable setting by passing environment variables to Redlib in the format `REDLIB_DEFAULT_{Y}`. Replace `{Y}` with the setting name (see list below) in capital letters.

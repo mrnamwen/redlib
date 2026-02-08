@@ -7,7 +7,6 @@ use crate::config::{self, get_setting};
 //
 use crate::{client::json, server::RequestExt};
 use askama::Template;
-use cookie::Cookie;
 use hyper::{Body, Request, Response};
 use libflate::deflate::{Decoder, Encoder};
 use log::error;
@@ -19,12 +18,15 @@ use serde_json::Value;
 use serde_json_path::{JsonPath, JsonPathExt};
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fs;
+use std::io::ErrorKind;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::str::FromStr;
 use std::string::ToString;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use time::{macros::format_description, Duration, OffsetDateTime};
-use url::Url;
+use url::{form_urlencoded, Url};
 
 /// Write a message to stderr on debug mode. This function is a no-op on
 /// release code.
@@ -620,6 +622,32 @@ pub struct Params {
 	pub before: Option<String>,
 }
 
+pub const PERSISTENT_PREFERENCE_NAMES: [&str; 21] = [
+	"theme",
+	"front_page",
+	"layout",
+	"wide",
+	"comment_sort",
+	"post_sort",
+	"blur_spoiler",
+	"show_nsfw",
+	"blur_nsfw",
+	"use_hls",
+	"hide_hls_notification",
+	"autoplay_videos",
+	"hide_sidebar_and_summary",
+	"fixed_navbar",
+	"hide_awards",
+	"hide_score",
+	"disable_visit_reddit_confirmation",
+	"video_quality",
+	"remove_default_feeds",
+	"subscriptions",
+	"filters",
+];
+
+static DISK_PREFERENCES_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 #[derive(Default, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[revisioned(revision = 1)]
 pub struct Preferences {
@@ -908,75 +936,177 @@ pub fn param(path: &str, value: &str) -> Option<String> {
 	)
 }
 
+fn persistent_preferences_path() -> Option<String> {
+	get_setting("REDLIB_PREFERENCES_PATH").and_then(|value| {
+		let path = value.trim().to_string();
+		if path.is_empty() {
+			None
+		} else {
+			Some(path)
+		}
+	})
+}
+
+pub fn persistent_preferences_enabled() -> bool {
+	persistent_preferences_path().is_some()
+}
+
+fn is_persistent_preference(name: &str) -> bool {
+	PERSISTENT_PREFERENCE_NAMES.contains(&name)
+}
+
+enum PersistentPreferencesState {
+	Loaded(HashMap<String, String>),
+	Missing,
+}
+
+fn read_persistent_preferences() -> Option<PersistentPreferencesState> {
+	let path = persistent_preferences_path()?;
+	let _guard = DISK_PREFERENCES_LOCK.lock().ok()?;
+
+	let contents = match fs::read_to_string(&path) {
+		Ok(contents) => contents,
+		Err(err) if err.kind() == ErrorKind::NotFound => return Some(PersistentPreferencesState::Missing),
+		Err(err) => {
+			error!("Failed to read preferences file {}: {}", path, err);
+			return None;
+		}
+	};
+
+	Some(PersistentPreferencesState::Loaded(form_urlencoded::parse(contents.as_bytes()).into_owned().collect()))
+}
+
+pub fn current_persistent_preferences(req: &Request<Body>) -> HashMap<String, String> {
+	let mut values = HashMap::new();
+	for name in PERSISTENT_PREFERENCE_NAMES {
+		let value = setting(req, name);
+		if !value.is_empty() {
+			values.insert(name.to_string(), value);
+		}
+	}
+	values
+}
+
+pub fn save_persistent_preferences(preferences: &HashMap<String, String>) -> Result<(), String> {
+	let Some(path) = persistent_preferences_path() else {
+		return Ok(());
+	};
+
+	let mut values = preferences.clone();
+	values.retain(|name, _| is_persistent_preference(name));
+
+	let mut entries: Vec<(String, String)> = values.into_iter().collect();
+	entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+	let mut serializer = form_urlencoded::Serializer::new(String::new());
+	for (name, value) in entries {
+		serializer.append_pair(&name, &value);
+	}
+	let encoded = serializer.finish();
+
+	let _guard = DISK_PREFERENCES_LOCK.lock().map_err(|_| "Failed to lock preferences file".to_string())?;
+
+	if let Some(parent) = Path::new(&path).parent() {
+		if !parent.as_os_str().is_empty() {
+			fs::create_dir_all(parent).map_err(|err| format!("Failed to create preferences directory {}: {err}", parent.display()))?;
+		}
+	}
+
+	let temp_path = format!("{path}.tmp");
+	fs::write(&temp_path, encoded).map_err(|err| format!("Failed to write preferences file {}: {err}", temp_path))?;
+	fs::rename(&temp_path, &path).map_err(|err| format!("Failed to replace preferences file {}: {err}", path))?;
+
+	Ok(())
+}
+
+fn joined_cookie_value(req: &Request<Body>, base_name: &str) -> Option<String> {
+	let mut value = String::new();
+	let mut saw_cookie = false;
+
+	if let Some(cookie) = req.cookie(base_name) {
+		value.push_str(cookie.value());
+		saw_cookie = true;
+	}
+
+	let mut cookie_number = 1;
+	while let Some(cookie) = req.cookie(&format!("{base_name}{cookie_number}")) {
+		value.push_str(cookie.value());
+		saw_cookie = true;
+		cookie_number += 1;
+	}
+
+	if saw_cookie {
+		Some(value)
+	} else {
+		None
+	}
+}
+
+fn setting_from_cookies(req: &Request<Body>, name: &str) -> Option<String> {
+	match name {
+		"subscriptions" => joined_cookie_value(req, "subscriptions"),
+		"filters" => joined_cookie_value(req, "filters"),
+		_ => req.cookie(name).map(|cookie| cookie.value().to_string()),
+	}
+}
+
+fn migrate_cookie_preferences_to_disk(req: &Request<Body>) -> Option<HashMap<String, String>> {
+	let mut values = HashMap::new();
+	for name in PERSISTENT_PREFERENCE_NAMES {
+		if let Some(value) = setting_from_cookies(req, name) {
+			if !value.is_empty() {
+				values.insert(name.to_string(), value);
+			}
+		}
+	}
+
+	if values.is_empty() {
+		return None;
+	}
+
+	match save_persistent_preferences(&values) {
+		Ok(()) => Some(values),
+		Err(err) => {
+			error!("Failed to migrate cookie preferences to disk: {}", err);
+			None
+		}
+	}
+}
+
+fn setting_from_cookies_or_defaults(req: &Request<Body>, name: &str) -> String {
+	if let Some(value) = setting_from_cookies(req, name) {
+		value
+	} else {
+		get_setting(&format!("REDLIB_DEFAULT_{}", name.to_uppercase())).unwrap_or_default()
+	}
+}
+
 /// Retrieve the value of a setting by name
 pub fn setting(req: &Request<Body>, name: &str) -> String {
-	// Parse a cookie value from request
-
-	// If this was called with "subscriptions" and the "subscriptions" cookie has a value
-	if name == "subscriptions" && req.cookie("subscriptions").is_some() {
-		// Create subscriptions string
-		let mut subscriptions = String::new();
-
-		// Default subscriptions cookie
-		if req.cookie("subscriptions").is_some() {
-			subscriptions.push_str(req.cookie("subscriptions").unwrap().value());
-		}
-
-		// Start with first numbered subscription cookie
-		let mut subscriptions_number = 1;
-
-		// While whatever subscriptionsNUMBER cookie we're looking at has a value
-		while req.cookie(&format!("subscriptions{subscriptions_number}")).is_some() {
-			// Push whatever subscriptionsNUMBER cookie we're looking at into the subscriptions string
-			subscriptions.push_str(req.cookie(&format!("subscriptions{subscriptions_number}")).unwrap().value());
-
-			// Increment subscription cookie number
-			subscriptions_number += 1;
-		}
-
-		// Return the subscriptions cookies as one large string
-		subscriptions
-	}
-	// If this was called with "filters" and the "filters" cookie has a value
-	else if name == "filters" && req.cookie("filters").is_some() {
-		// Create filters string
-		let mut filters = String::new();
-
-		// Default filters cookie
-		if req.cookie("filters").is_some() {
-			filters.push_str(req.cookie("filters").unwrap().value());
-		}
-
-		// Start with first numbered filters cookie
-		let mut filters_number = 1;
-
-		// While whatever filtersNUMBER cookie we're looking at has a value
-		while req.cookie(&format!("filters{filters_number}")).is_some() {
-			// Push whatever filtersNUMBER cookie we're looking at into the filters string
-			filters.push_str(req.cookie(&format!("filters{filters_number}")).unwrap().value());
-
-			// Increment filters cookie number
-			filters_number += 1;
-		}
-
-		// Return the filters cookies as one large string
-		filters
-	}
-	// The above two still come to this if there was no existing value
-	else {
-		req
-			.cookie(name)
-			.unwrap_or_else(|| {
-				// If there is no cookie for this setting, try receiving a default from the config
-				if let Some(default) = get_setting(&format!("REDLIB_DEFAULT_{}", name.to_uppercase())) {
-					Cookie::new(name, default)
-				} else {
-					Cookie::from(name)
+	if is_persistent_preference(name) && persistent_preferences_enabled() {
+		if let Some(values) = read_persistent_preferences() {
+			match values {
+				PersistentPreferencesState::Loaded(values) => {
+					return values
+						.get(name)
+						.cloned()
+						.unwrap_or_else(|| get_setting(&format!("REDLIB_DEFAULT_{}", name.to_uppercase())).unwrap_or_default());
 				}
-			})
-			.value()
-			.to_string()
+				PersistentPreferencesState::Missing => {
+					// One-time migration path: when disk persistence is enabled and no file exists,
+					// bootstrap it from existing browser cookies.
+					if let Some(values) = migrate_cookie_preferences_to_disk(req) {
+						return values
+							.get(name)
+							.cloned()
+							.unwrap_or_else(|| get_setting(&format!("REDLIB_DEFAULT_{}", name.to_uppercase())).unwrap_or_default());
+					}
+				}
+			}
+		}
 	}
+
+	setting_from_cookies_or_defaults(req, name)
 }
 
 /// Retrieve the value of a setting by name or the default value

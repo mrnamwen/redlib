@@ -3,8 +3,8 @@
 use crate::{config, utils};
 // CRATES
 use crate::utils::{
-	catch_random, error, filter_posts, format_num, format_url, get_filters, info, nsfw_landing, param, redirect, rewrite_urls, setting, template, val, Post, Preferences,
-	Subreddit,
+	catch_random, current_persistent_preferences, error, filter_posts, format_num, format_url, get_filters, info, nsfw_landing, param, redirect, rewrite_urls,
+	save_persistent_preferences, setting, template, val, Post, Preferences, Subreddit,
 };
 use crate::{client::json, server::RequestExt, server::ResponseExt};
 use askama::Template;
@@ -68,7 +68,7 @@ pub async fn community(req: Request<Body>) -> Result<Response<Body>, String> {
 	let subscribed = setting(&req, "subscriptions");
 	let front_page = setting(&req, "front_page");
 	let remove_default_feeds = setting(&req, "remove_default_feeds") == "on";
-	let post_sort = req.cookie("post_sort").map_or_else(|| "hot".to_string(), |c| c.value().to_string());
+	let post_sort = setting(&req, "post_sort");
 	let sort = req.param("sort").unwrap_or_else(|| req.param("id").unwrap_or(post_sort));
 
 	let sub_name = req.param("sub").unwrap_or(if front_page == "default" || front_page.is_empty() {
@@ -454,6 +454,21 @@ pub async fn subscriptions_filters(req: Request<Body>) -> Result<Response<Body>,
 		}
 	}
 
+	let mut persistent_preferences = current_persistent_preferences(&req);
+	if sub_list.is_empty() {
+		persistent_preferences.remove("subscriptions");
+	} else {
+		persistent_preferences.insert("subscriptions".to_string(), sub_list.join("+"));
+	}
+
+	if filters.is_empty() {
+		persistent_preferences.remove("filters");
+	} else {
+		persistent_preferences.insert("filters".to_string(), filters.join("+"));
+	}
+
+	save_persistent_preferences(&persistent_preferences)?;
+
 	Ok(response)
 }
 
@@ -590,7 +605,7 @@ async fn subreddit(sub: &str, quarantined: bool) -> Result<Subreddit, String> {
 }
 
 pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
-	if config::get_setting("REDLIB_ENABLE_RSS").is_none() {
+	if !utils::enable_rss() {
 		return Ok(error(req, "RSS is disabled on this instance.").await.unwrap_or_default());
 	}
 
@@ -599,7 +614,7 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 
 	// Get subreddit
 	let sub = req.param("sub").unwrap_or_default();
-	let post_sort = req.cookie("post_sort").map_or_else(|| "hot".to_string(), |c| c.value().to_string());
+	let post_sort = setting(&req, "post_sort");
 	let sort = req.param("sort").unwrap_or_else(|| req.param("id").unwrap_or(post_sort));
 
 	// Get path

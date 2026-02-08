@@ -181,15 +181,21 @@
 		{% endfor %}
 	</div>
 	{% endif %}
-
 	<div id="settings_note">
-		<p><b>Note:</b> settings and subscriptions are saved in browser cookies. Clearing your cookies will reset them.
-		</p>
+		{% if persistent_preferences_enabled %}
+		<p><b>Note:</b> settings, subscriptions, and filters are saved on the server and shared across browsers.</p>
+		{% else %}
+		<p><b>Note:</b> settings and subscriptions are saved in browser cookies. Clearing your cookies will reset them.</p>
+		{% endif %}
 		<br>
 		{% match prefs.to_urlencoded() %}
 		{% when Ok with (encoded_prefs) %}
+		{% if persistent_preferences_enabled %}
+		<p>You can apply your current settings and subscriptions again using <a href="/settings/restore/?{{ encoded_prefs }}">this link</a>.</p>
+		{% else %}
 		<p>You can restore your current settings and subscriptions after clearing your cookies using <a
 				href="/settings/restore/?{{ encoded_prefs }}">this link</a>.</p>
+		{% endif %}
 		{% when Err with (err) %}
 		<p>There was an error creating your restore link: {{ err }}</p>
 		<p>Please report this issue</p>

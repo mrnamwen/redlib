@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // CRATES
 use crate::server::ResponseExt;
 use crate::subreddit::join_until_size_limit;
-use crate::utils::{deflate_decompress, redirect, template, Preferences};
+use crate::utils::{current_persistent_preferences, deflate_decompress, persistent_preferences_enabled, redirect, save_persistent_preferences, template, Preferences};
 use askama::Template;
 use cookie::Cookie;
 use futures_lite::StreamExt;
@@ -20,6 +20,7 @@ use url::form_urlencoded;
 struct SettingsTemplate {
 	prefs: Preferences,
 	url: String,
+	persistent_preferences_enabled: bool,
 }
 
 // CONSTANTS
@@ -54,6 +55,7 @@ pub async fn get(req: Request<Body>) -> Result<Response<Body>, String> {
 	Ok(template(&SettingsTemplate {
 		prefs: Preferences::new(&req),
 		url,
+		persistent_preferences_enabled: persistent_preferences_enabled(),
 	}))
 }
 
@@ -61,14 +63,7 @@ pub async fn get(req: Request<Body>) -> Result<Response<Body>, String> {
 pub async fn set(req: Request<Body>) -> Result<Response<Body>, String> {
 	// Split the body into parts
 	let (parts, mut body) = req.into_parts();
-
-	// Grab existing cookies
-	let _cookies: Vec<Cookie<'_>> = parts
-		.headers
-		.get_all("Cookie")
-		.iter()
-		.filter_map(|header| Cookie::parse(header.to_str().unwrap_or_default()).ok())
-		.collect();
+	let req = Request::from_parts(parts, Body::empty());
 
 	// Aggregate the body...
 	// let whole_body = hyper::body::aggregate(req).await.map_err(|e| e.to_string())?;
@@ -83,6 +78,7 @@ pub async fn set(req: Request<Body>) -> Result<Response<Body>, String> {
 	let form = url::form_urlencoded::parse(&body_bytes).collect::<HashMap<_, _>>();
 
 	let mut response = redirect("/settings");
+	let mut persistent_preferences = current_persistent_preferences(&req);
 
 	for &name in &PREFS {
 		match form.get(name) {
@@ -95,26 +91,35 @@ pub async fn set(req: Request<Body>) -> Result<Response<Body>, String> {
 			),
 			None => response.remove_cookie(name.to_string()),
 		};
+
+		match form.get(name) {
+			Some(value) => {
+				persistent_preferences.insert(name.to_string(), value.to_string());
+			}
+			None => {
+				persistent_preferences.remove(name);
+			}
+		}
 	}
+
+	save_persistent_preferences(&persistent_preferences)?;
 
 	Ok(response)
 }
 
-fn set_cookies_method(req: Request<Body>, remove_cookies: bool) -> Response<Body> {
+fn set_cookies_method(req: Request<Body>, remove_cookies: bool) -> Result<Response<Body>, String> {
 	// Split the body into parts
 	let (parts, _) = req.into_parts();
 
-	// Grab existing cookies
-	let _cookies: Vec<Cookie<'_>> = parts
+	let query = parts.uri.query().unwrap_or_default().to_string();
+	let form = url::form_urlencoded::parse(query.as_bytes()).collect::<HashMap<_, _>>();
+	let cookies_string = parts
 		.headers
-		.get_all("Cookie")
-		.iter()
-		.filter_map(|header| Cookie::parse(header.to_str().unwrap_or_default()).ok())
-		.collect();
-
-	let query = parts.uri.query().unwrap_or_default().as_bytes();
-
-	let form = url::form_urlencoded::parse(query).collect::<HashMap<_, _>>();
+		.get("cookie")
+		.map(|hv| hv.to_str().unwrap_or("").to_string()) // Return String
+		.unwrap_or_else(String::new); // Return an empty string if None
+	let req = Request::from_parts(parts, Body::empty());
+	let mut persistent_preferences = current_persistent_preferences(&req);
 
 	let path = match form.get("redirect") {
 		Some(value) => {
@@ -145,18 +150,22 @@ fn set_cookies_method(req: Request<Body>, remove_cookies: bool) -> Response<Body
 				}
 			}
 		};
+
+		match form.get(name) {
+			Some(value) => {
+				persistent_preferences.insert(name.to_string(), value.to_string());
+			}
+			None => {
+				if remove_cookies {
+					persistent_preferences.remove(name);
+				}
+			}
+		}
 	}
 
 	// Get subscriptions/filters to restore from query string
 	let subscriptions = form.get("subscriptions");
 	let filters = form.get("filters");
-
-	// We can't search through the cookies directly like in subreddit.rs, so instead we have to make a string out of the request's headers to search through
-	let cookies_string = parts
-		.headers
-		.get("cookie")
-		.map(|hv| hv.to_str().unwrap_or("").to_string()) // Return String
-		.unwrap_or_else(String::new); // Return an empty string if None
 
 	// If there are subscriptions to restore set them and delete any old subscriptions cookies, otherwise delete them all
 	if let Some(subscriptions) = subscriptions {
@@ -192,20 +201,30 @@ fn set_cookies_method(req: Request<Body>, remove_cookies: bool) -> Response<Body
 			// Increment subscriptions cookie number
 			subscriptions_number_to_delete_from += 1;
 		}
+
+		if subscriptions.is_empty() {
+			persistent_preferences.remove("subscriptions");
+		} else {
+			persistent_preferences.insert("subscriptions".to_string(), subscriptions.to_string());
+		}
 	} else {
-		// Remove unnumbered subscriptions cookie
-		response.remove_cookie("subscriptions".to_string());
+		if remove_cookies {
+			// Remove unnumbered subscriptions cookie
+			response.remove_cookie("subscriptions".to_string());
 
-		// Starts at one to deal with the first numbered subscription cookie and onwards
-		let mut subscriptions_number_to_delete_from = 1;
+			// Starts at one to deal with the first numbered subscription cookie and onwards
+			let mut subscriptions_number_to_delete_from = 1;
 
-		// While subscriptionsNUMBER= is in the string of cookies add a response removing that cookie
-		while cookies_string.contains(&format!("subscriptions{subscriptions_number_to_delete_from}=")) {
-			// Remove that subscriptions cookie
-			response.remove_cookie(format!("subscriptions{subscriptions_number_to_delete_from}"));
+			// While subscriptionsNUMBER= is in the string of cookies add a response removing that cookie
+			while cookies_string.contains(&format!("subscriptions{subscriptions_number_to_delete_from}=")) {
+				// Remove that subscriptions cookie
+				response.remove_cookie(format!("subscriptions{subscriptions_number_to_delete_from}"));
 
-			// Increment subscriptions cookie number
-			subscriptions_number_to_delete_from += 1;
+				// Increment subscriptions cookie number
+				subscriptions_number_to_delete_from += 1;
+			}
+
+			persistent_preferences.remove("subscriptions");
 		}
 	}
 
@@ -243,33 +262,45 @@ fn set_cookies_method(req: Request<Body>, remove_cookies: bool) -> Response<Body
 			// Increment filters cookie number
 			filters_number_to_delete_from += 1;
 		}
+
+		if filters.is_empty() {
+			persistent_preferences.remove("filters");
+		} else {
+			persistent_preferences.insert("filters".to_string(), filters.to_string());
+		}
 	} else {
-		// Remove unnumbered filters cookie
-		response.remove_cookie("filters".to_string());
+		if remove_cookies {
+			// Remove unnumbered filters cookie
+			response.remove_cookie("filters".to_string());
 
-		// Starts at one to deal with the first numbered subscription cookie and onwards
-		let mut filters_number_to_delete_from = 1;
+			// Starts at one to deal with the first numbered subscription cookie and onwards
+			let mut filters_number_to_delete_from = 1;
 
-		// While filtersNUMBER= is in the string of cookies add a response removing that cookie
-		while cookies_string.contains(&format!("filters{filters_number_to_delete_from}=")) {
-			// Remove that sfilters cookie
-			response.remove_cookie(format!("filters{filters_number_to_delete_from}"));
+			// While filtersNUMBER= is in the string of cookies add a response removing that cookie
+			while cookies_string.contains(&format!("filters{filters_number_to_delete_from}=")) {
+				// Remove that sfilters cookie
+				response.remove_cookie(format!("filters{filters_number_to_delete_from}"));
 
-			// Increment filters cookie number
-			filters_number_to_delete_from += 1;
+				// Increment filters cookie number
+				filters_number_to_delete_from += 1;
+			}
+
+			persistent_preferences.remove("filters");
 		}
 	}
 
-	response
+	save_persistent_preferences(&persistent_preferences)?;
+
+	Ok(response)
 }
 
 /// Set cookies using response "Set-Cookie" header
 pub async fn restore(req: Request<Body>) -> Result<Response<Body>, String> {
-	Ok(set_cookies_method(req, true))
+	set_cookies_method(req, true)
 }
 
 pub async fn update(req: Request<Body>) -> Result<Response<Body>, String> {
-	Ok(set_cookies_method(req, false))
+	set_cookies_method(req, false)
 }
 
 pub async fn encoded_restore(req: Request<Body>) -> Result<Response<Body>, String> {

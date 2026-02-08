@@ -103,6 +103,10 @@ pub struct Config {
 	#[serde(rename = "REDLIB_ENABLE_RSS")]
 	pub(crate) enable_rss: Option<String>,
 
+	#[serde(rename = "REDLIB_PREFERENCES_PATH")]
+	#[serde(alias = "LIBREDDIT_PREFERENCES_PATH")]
+	pub(crate) preferences_path: Option<String>,
+
 	#[serde(rename = "REDLIB_FULL_URL")]
 	pub(crate) full_url: Option<String>,
 
@@ -154,6 +158,7 @@ impl Config {
 			robots_disable_indexing: parse("REDLIB_ROBOTS_DISABLE_INDEXING"),
 			pushshift: parse("REDLIB_PUSHSHIFT_FRONTEND"),
 			enable_rss: parse("REDLIB_ENABLE_RSS"),
+			preferences_path: parse("REDLIB_PREFERENCES_PATH"),
 			full_url: parse("REDLIB_FULL_URL"),
 			default_remove_default_feeds: parse("REDLIB_DEFAULT_REMOVE_DEFAULT_FEEDS"),
 		}
@@ -184,6 +189,7 @@ fn get_setting_from_config(name: &str, config: &Config) -> Option<String> {
 		"REDLIB_ROBOTS_DISABLE_INDEXING" => config.robots_disable_indexing.clone(),
 		"REDLIB_PUSHSHIFT_FRONTEND" => config.pushshift.clone(),
 		"REDLIB_ENABLE_RSS" => config.enable_rss.clone(),
+		"REDLIB_PREFERENCES_PATH" => config.preferences_path.clone(),
 		"REDLIB_FULL_URL" => config.full_url.clone(),
 		"REDLIB_DEFAULT_REMOVE_DEFAULT_FEEDS" => config.default_remove_default_feeds.clone(),
 		_ => None,
@@ -258,6 +264,12 @@ fn test_default_subscriptions() {
 #[sealed_test(env = [("REDLIB_DEFAULT_FILTERS", "news+bestof")])]
 fn test_default_filters() {
 	assert_eq!(get_setting("REDLIB_DEFAULT_FILTERS"), Some("news+bestof".into()));
+}
+
+#[test]
+#[sealed_test(env = [("REDLIB_PREFERENCES_PATH", "/tmp/redlib-prefs.txt")])]
+fn test_preferences_path() {
+	assert_eq!(get_setting("REDLIB_PREFERENCES_PATH"), Some("/tmp/redlib-prefs.txt".into()));
 }
 
 #[test]

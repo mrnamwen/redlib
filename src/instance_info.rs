@@ -127,6 +127,7 @@ impl InstanceInfo {
 				["SFW only", &convert(&self.config.sfw_only)],
 				["Pushshift frontend", &convert(&self.config.pushshift)],
 				["RSS enabled", &convert(&self.config.enable_rss)],
+				["Preferences path", &convert(&self.config.preferences_path)],
 				["Full URL", &convert(&self.config.full_url)],
 				["Remove default feeds", &convert(&self.config.default_remove_default_feeds)],
 				//TODO: fallback to crate::config::DEFAULT_PUSHSHIFT_FRONTEND
@@ -165,29 +166,30 @@ impl InstanceInfo {
                 Git commit: {}\n
                 Deploy date: {}\n
                 Deploy timestamp: {}\n
-                Compile mode: {}\n
-				SFW only: {:?}\n
-				Pushshift frontend: {:?}\n
-				RSS enabled: {:?}\n
-				Full URL: {:?}\n
-				Remove default feeds: {:?}\n
-                Config:\n
-                    Banner: {:?}\n
-                    Hide awards: {:?}\n
-                    Hide score: {:?}\n
-                    Default theme: {:?}\n
-                    Default front page: {:?}\n
-                    Default layout: {:?}\n
-                    Default wide: {:?}\n
-                    Default comment sort: {:?}\n
-                    Default post sort: {:?}\n
-					Default blur Spoiler: {:?}\n
-                    Default show NSFW: {:?}\n
-                    Default blur NSFW: {:?}\n
-                    Default use HLS: {:?}\n
-                    Default hide HLS notification: {:?}\n
-                    Default subscriptions: {:?}\n
-                    Default filters: {:?}\n",
+					Compile mode: {}\n
+					SFW only: {:?}\n
+					Pushshift frontend: {:?}\n
+					RSS enabled: {:?}\n
+					Full URL: {:?}\n
+					Remove default feeds: {:?}\n
+	                Config:\n
+	                    Banner: {:?}\n
+	                    Hide awards: {:?}\n
+	                    Hide score: {:?}\n
+	                    Default theme: {:?}\n
+	                    Default front page: {:?}\n
+	                    Default layout: {:?}\n
+	                    Default wide: {:?}\n
+	                    Default comment sort: {:?}\n
+	                    Default post sort: {:?}\n
+	                    Default blur Spoiler: {:?}\n
+	                    Default show NSFW: {:?}\n
+	                    Default blur NSFW: {:?}\n
+	                    Default use HLS: {:?}\n
+	                    Default hide HLS notification: {:?}\n
+	                    Default subscriptions: {:?}\n
+	                    Default filters: {:?}\n
+	                    Preferences path: {:?}\n",
 					self.package_name,
 					self.crate_version,
 					self.git_commit,
@@ -195,10 +197,10 @@ impl InstanceInfo {
 					self.deploy_unix_ts,
 					self.compile_mode,
 					self.config.sfw_only,
+					self.config.pushshift,
 					self.config.enable_rss,
 					self.config.full_url,
 					self.config.default_remove_default_feeds,
-					self.config.pushshift,
 					self.config.banner,
 					self.config.default_hide_awards,
 					self.config.default_hide_score,
@@ -215,6 +217,7 @@ impl InstanceInfo {
 					self.config.default_hide_hls_notification,
 					self.config.default_subscriptions,
 					self.config.default_filters,
+					self.config.preferences_path,
 				)
 			}
 			StringType::Html => self.to_table(),
