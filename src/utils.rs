@@ -10,6 +10,7 @@ use askama::Template;
 use hyper::{Body, Request, Response};
 use libflate::deflate::{Decoder, Encoder};
 use log::error;
+use percent_encoding::percent_decode_str;
 use regex::Regex;
 use revision::revisioned;
 use rust_embed::RustEmbed;
@@ -955,6 +956,26 @@ fn is_persistent_preference(name: &str) -> bool {
 	PERSISTENT_PREFERENCE_NAMES.contains(&name)
 }
 
+fn decode_percent_repeated(value: &str) -> String {
+	let mut decoded = value.to_string();
+	for _ in 0..3 {
+		let next = percent_decode_str(&decoded).decode_utf8_lossy().to_string();
+		if next == decoded {
+			break;
+		}
+		decoded = next;
+	}
+	decoded
+}
+
+fn normalize_setting_value(name: &str, value: String) -> String {
+	if name == "subscriptions" || name == "filters" {
+		decode_percent_repeated(&value)
+	} else {
+		value
+	}
+}
+
 enum PersistentPreferencesState {
 	Loaded(HashMap<String, String>),
 	Missing,
@@ -973,7 +994,14 @@ fn read_persistent_preferences() -> Option<PersistentPreferencesState> {
 		}
 	};
 
-	Some(PersistentPreferencesState::Loaded(form_urlencoded::parse(contents.as_bytes()).into_owned().collect()))
+	let mut values: HashMap<String, String> = form_urlencoded::parse(contents.as_bytes()).into_owned().collect();
+	for name in ["subscriptions", "filters"] {
+		if let Some(value) = values.get_mut(name) {
+			*value = normalize_setting_value(name, value.to_string());
+		}
+	}
+
+	Some(PersistentPreferencesState::Loaded(values))
 }
 
 pub fn current_persistent_preferences(req: &Request<Body>) -> HashMap<String, String> {
@@ -994,6 +1022,11 @@ pub fn save_persistent_preferences(preferences: &HashMap<String, String>) -> Res
 
 	let mut values = preferences.clone();
 	values.retain(|name, _| is_persistent_preference(name));
+	for name in ["subscriptions", "filters"] {
+		if let Some(value) = values.get_mut(name) {
+			*value = normalize_setting_value(name, value.to_string());
+		}
+	}
 
 	let mut entries: Vec<(String, String)> = values.into_iter().collect();
 	entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1044,9 +1077,9 @@ fn joined_cookie_value(req: &Request<Body>, base_name: &str) -> Option<String> {
 
 fn setting_from_cookies(req: &Request<Body>, name: &str) -> Option<String> {
 	match name {
-		"subscriptions" => joined_cookie_value(req, "subscriptions"),
-		"filters" => joined_cookie_value(req, "filters"),
-		_ => req.cookie(name).map(|cookie| cookie.value().to_string()),
+		"subscriptions" => joined_cookie_value(req, "subscriptions").map(|value| normalize_setting_value(name, value)),
+		"filters" => joined_cookie_value(req, "filters").map(|value| normalize_setting_value(name, value)),
+		_ => req.cookie(name).map(|cookie| normalize_setting_value(name, cookie.value().to_string())),
 	}
 }
 
@@ -1579,7 +1612,13 @@ pub fn get_post_url(post: &Post) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::{format_num, format_url, rewrite_urls, Preferences};
+	use super::{decode_percent_repeated, format_num, format_url, rewrite_urls, Preferences};
+
+	#[test]
+	fn decode_percent_repeated_handles_encoded_plus() {
+		assert_eq!(decode_percent_repeated("pathofexile%2BSillyTavernAI"), "pathofexile+SillyTavernAI");
+		assert_eq!(decode_percent_repeated("pathofexile%252BSillyTavernAI"), "pathofexile+SillyTavernAI");
+	}
 
 	#[test]
 	fn format_num_works() {
