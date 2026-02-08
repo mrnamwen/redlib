@@ -13,6 +13,7 @@ use htmlescape::decode_html;
 use hyper::{Body, Request, Response};
 
 use chrono::DateTime;
+use log::warn;
 use regex::Regex;
 use std::sync::LazyLock;
 use time::{Duration, OffsetDateTime};
@@ -186,6 +187,43 @@ pub async fn community(req: Request<Body>) -> Result<Response<Body>, String> {
 				}))
 			}
 			Err(msg) => match msg.as_str() {
+				_ if sub_name.contains('+') => {
+					warn!("Falling back to per-subreddit fetch for multireddit {} after error: {}", sub_name, msg);
+
+					let mut merged_posts: Vec<Post> = Vec::new();
+					for requested_sub in sub_name.split('+').filter(|s| !s.is_empty()) {
+						let requested_sub_quarantined = can_access_quarantine(&req, requested_sub) || root;
+						let fallback_path = format!("/r/{}/{sort}.json?{}{params}", requested_sub, req.uri().query().unwrap_or_default());
+						if let Ok((mut fetched_posts, _)) = Post::fetch(&fallback_path, requested_sub_quarantined).await {
+							merged_posts.append(&mut fetched_posts);
+						}
+					}
+
+					if !merged_posts.is_empty() {
+						let (_, all_posts_filtered) = filter_posts(&mut merged_posts, &filters);
+						let no_posts = merged_posts.is_empty();
+						let all_posts_hidden_nsfw = !no_posts && (merged_posts.iter().all(|p| p.flags.nsfw) && setting(&req, "show_nsfw") != "on");
+
+						merged_posts.sort_by(|a, b| b.created_ts.cmp(&a.created_ts));
+						merged_posts.sort_by(|a, b| b.flags.stickied.cmp(&a.flags.stickied));
+
+						Ok(template(&SubredditTemplate {
+							sub,
+							posts: merged_posts,
+							sort: (sort, param(&path, "t").unwrap_or_default()),
+							ends: (param(&path, "after").unwrap_or_default(), String::new()),
+							prefs: Preferences::new(&req),
+							url,
+							redirect_url,
+							is_filtered: false,
+							all_posts_filtered,
+							all_posts_hidden_nsfw,
+							no_posts,
+						}))
+					} else {
+						error(req, &msg).await
+					}
+				}
 				"quarantined" | "gated" => Ok(quarantine(&req, sub_name, &msg)),
 				"private" => error(req, &format!("r/{sub_name} is a private community")).await,
 				"banned" => error(req, &format!("r/{sub_name} has been banned from Reddit")).await,
