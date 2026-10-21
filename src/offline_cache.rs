@@ -26,13 +26,35 @@ fn cache_max_age() -> Duration {
 		.unwrap_or(Duration::from_secs(DEFAULT_JSON_CACHE_MAX_AGE_SECS))
 }
 
+/// Maximum length of the base64 cache key before it is shortened. Filesystem
+/// name limits are 255 bytes, and `.json`/`.tmp` suffixes must still fit.
+const MAX_CACHE_KEY_LEN: usize = 160;
+
+/// FNV-1a, used only to keep long cache keys unique after shortening.
+fn fnv1a(bytes: &[u8]) -> u64 {
+	let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+	for byte in bytes {
+		hash ^= u64::from(*byte);
+		hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+	}
+	hash
+}
+
 fn cache_file(path: &str) -> Option<PathBuf> {
 	if !path.contains(".json") {
 		return None;
 	}
 
 	let root = cache_root()?;
-	Some(root.join(format!("{}.json", URL_SAFE_NO_PAD.encode(path))))
+	let encoded = URL_SAFE_NO_PAD.encode(path);
+	let name = if encoded.len() <= MAX_CACHE_KEY_LEN {
+		format!("{encoded}.json")
+	} else {
+		// Long multireddit/subscription paths would exceed the filesystem's
+		// filename limit, so keep a short prefix and a stable digest.
+		format!("{}-{:016x}.json", &encoded[..MAX_CACHE_KEY_LEN - 24], fnv1a(path.as_bytes()))
+	};
+	Some(root.join(name))
 }
 
 pub fn load_json(path: &str) -> Option<String> {
@@ -121,4 +143,17 @@ fn test_json_cache_round_trip() {
 	store_json(path, body);
 
 	assert_eq!(load_json(path), Some(body.to_string()));
+}
+
+#[test]
+#[sealed_test(env = [("REDLIB_JSON_CACHE_PATH", "/tmp/redlib-json-cache-long-test"), ("REDLIB_JSON_CACHE_MAX_AGE_SECS", "60")])]
+fn test_long_json_cache_path_round_trip() {
+	let path = format!("/r/{}/hot.json?&raw_json=1", vec!["averylongsubredditname"; 40].join("+"));
+	let body = "{\"data\":{\"children\":[]}}";
+
+	store_json(&path, body);
+
+	assert_eq!(load_json(&path), Some(body.to_string()));
+	assert!(cache_file(&path).unwrap().file_name().unwrap().len() <= 255);
+	assert_ne!(cache_file(&path), cache_file(&format!("{path}2")));
 }
