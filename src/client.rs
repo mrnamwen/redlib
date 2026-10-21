@@ -492,6 +492,9 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 /// OAuth tokens. Encoding the slash after `comments` reaches the same handler
 /// without matching the edge rule. Only the route portion is rewritten, and
 /// only for the API base; short-URL HEAD requests keep their paths untouched.
+///
+/// Workaround from redlib-org/redlib#592, applied at the request layer so
+/// redirects and canonical-path checks are covered as well.
 pub(crate) fn encode_comments_route(path: &str) -> String {
 	// Never touch query strings, where `/comments/` may legitimately appear.
 	let query_start = path.find('?').unwrap_or(path.len());

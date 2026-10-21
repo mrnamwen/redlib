@@ -459,6 +459,21 @@ Redlib [supports](https://docs.rs/wreq/latest/wreq/#proxies) proxy usage using t
 - `socks5://` is the scheme for socks5 proxy
 - `socks5h://` is the scheme for socks5h proxy
 
+## Reddit blocking workarounds
+
+Since 2026-10-20 Reddit rejects anonymous app-only OAuth tokens on the
+`/comments/` JSON routes with its "You've been blocked by network security"
+HTML page, while listings keep working. Redlib works around this in two layers:
+
+1. The slash after `comments` is percent-encoded (`/r/<sub>/comments%2F<id>`),
+   which reaches the same handler without matching the edge rule.
+2. If that is blocked too, comment pages are built from Reddit's public
+   `shreddit` HTML fragments and converted into the usual JSON shape. The JSON
+   API is retried after an hour.
+
+Both workarounds are best-effort: Reddit is moving comment data toward
+logged-in sessions, so these may need revisiting if the edge rules change.
+
 ## Security
 
 This project uses [BoringSSL](https://boringssl.googlesource.com/boringssl/), built from source with patches from

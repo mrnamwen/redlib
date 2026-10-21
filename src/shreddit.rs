@@ -2,6 +2,9 @@
 // (403 "blocked by network security" since 2026-10-20; `client::request`
 // currently gets past it by encoding a slash).
 //
+// Adapted from polak14/redlib's shreddit fallback (AGPL-3.0), written for
+// redlib-org/redlib#591.
+//
 // The post itself still comes from the JSON API (`/by_id`). Comments are scraped
 // from the HTML fragments reddit.com loads them from (`/svc/shreddit/...`) and
 // converted into the shape of the `/comments/` JSON response, so post.rs and the
