@@ -979,6 +979,7 @@ a.search_subreddit:hover {
         "post_score post_title  post_thumbnail" 1fr
         "post_score post_media  post_thumbnail" auto
         "post_score post_body   post_thumbnail" auto
+        "post_score post_listing_preview post_thumbnail" auto
         "post_score post_poll   post_thumbnail" auto
         "post_score post_notification post_thumbnail" auto
         "post_score post_footer post_thumbnail" auto
@@ -1270,6 +1271,85 @@ a.search_subreddit:hover {
     opacity: 0.8;
     max-height: 250px;
     overflow: hidden;
+}
+
+.listing_preview_panel {
+    --listing-preview-max-height: 24rem;
+    grid-area: post_listing_preview;
+    margin: 0 20px 10px 12px;
+    padding: 12px;
+    border: var(--panel-border);
+    border-radius: 8px;
+    background: var(--background);
+}
+
+.listing_preview_panel[hidden] {
+    display: none;
+}
+
+.listing_preview_panel[data-size="small"] {
+    --listing-preview-max-height: 16rem;
+}
+
+.listing_preview_panel[data-size="large"] {
+    --listing-preview-max-height: 34rem;
+}
+
+.listing_preview_panel[data-size="xlarge"] {
+    --listing-preview-max-height: 44rem;
+}
+
+.listing_preview_toolbar,
+.post_footer_actions,
+.listing_preview_controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.listing_preview_toolbar {
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.listing_preview_label {
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    opacity: 0.7;
+    text-transform: uppercase;
+}
+
+.listing_preview_toggle,
+.listing_preview_resize,
+.listing_preview_reset {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    font-weight: bold;
+    padding: 0;
+}
+
+.listing_preview_media {
+    max-width: 100%;
+}
+
+.listing_preview_media .post_media_content,
+.listing_preview_media .gallery {
+    max-width: 100%;
+    margin: 0 auto;
+}
+
+.listing_preview_media .post_media_video,
+.listing_preview_media .post_media_image.short svg,
+.listing_preview_media .post_media_image.short img,
+.listing_preview_media .post_media_image svg,
+.listing_preview_media .post_media_image img,
+.listing_preview_media .gallery img {
+    max-height: var(--listing-preview-max-height);
 }
 
 .post_footer {
@@ -1625,6 +1705,10 @@ summary.comment_data {
 
 .compact .post_footer {
     margin: 5px 15px 15px 15px;
+}
+
+.compact .listing_preview_panel {
+    margin: 0 15px 10px;
 }
 
 .compact .post_thumbnail {
@@ -2021,6 +2105,7 @@ th {
             "post_title  post_title  post_thumbnail" 1fr
             "post_media  post_media  post_thumbnail" auto
             "post_body   post_body   post_thumbnail" auto
+            "post_listing_preview post_listing_preview post_thumbnail" auto
             "post_poll   post_poll   post_thumbnail" auto
             "post_notification post_notification post_thumbnail" auto
             "post_score  post_footer post_thumbnail" auto
@@ -2049,6 +2134,11 @@ th {
     }
     .post_footer {
         margin-left: 15px;
+    }
+
+    .listing_preview_toolbar {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .replies > .comment {

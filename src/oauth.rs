@@ -71,9 +71,30 @@ pub struct Oauth {
 }
 
 impl Oauth {
-	/// Create a new OAuth client
-	pub(crate) async fn new() -> Self {
-		// Try MobileSpoofAuth first, then fall back to GenericWebAuth
+	fn unavailable() -> Self {
+		let backend = OauthBackendImpl::GenericWeb(GenericWebAuth::new());
+		let headers_map = backend.get_headers();
+
+		Self {
+			headers_map,
+			expires_in: 30,
+			backend,
+		}
+	}
+
+	pub(crate) fn is_authenticated(&self) -> bool {
+		self.headers_map.contains_key("Authorization")
+	}
+
+	fn format_auth_error(err: AuthError) -> String {
+		match err {
+			AuthError::Hyper(error) => error.to_string(),
+			AuthError::SerdeDeserialize(error) => error.to_string(),
+			AuthError::Field((value, error)) => format!("{error}\n{value}"),
+		}
+	}
+
+	async fn try_new(max_failures: usize) -> Result<Self, String> {
 		let mut failure_count = 0;
 		let mut backend = OauthBackendImpl::MobileSpoof(MobileSpoofAuth::new());
 
@@ -82,38 +103,41 @@ impl Oauth {
 			match attempt {
 				Ok(Ok(oauth)) => {
 					info!("[✅] Successfully created OAuth client");
-					return oauth;
+					return Ok(oauth);
 				}
-				Ok(Err(e)) => {
-					error!(
-						"[⛔] Failed to create OAuth client: {}. Retrying in 5 seconds...",
-						match e {
-							AuthError::Hyper(error) => error.to_string(),
-							AuthError::SerdeDeserialize(error) => error.to_string(),
-							AuthError::Field((value, error)) => format!("{error}\n{value}"),
-						}
-					);
+				Ok(Err(err)) => {
+					let message = Self::format_auth_error(err);
+					error!("[⛔] Failed to create OAuth client: {}. Retrying in 5 seconds...", message);
+					failure_count += 1;
 				}
 				Err(_) => {
 					error!("[⛔] Failed to create OAuth client before timeout. Retrying in 5 seconds...");
+					failure_count += 1;
 				}
 			}
 
-			failure_count += 1;
-
-			// Switch to GenericWeb after 5 failures with MobileSpoof
 			if matches!(backend, OauthBackendImpl::MobileSpoof(_)) && failure_count >= 5 {
 				warn!("[🔄] MobileSpoofAuth failed 5 times. Falling back to GenericWebAuth...");
 				backend = OauthBackendImpl::GenericWeb(GenericWebAuth::new());
 			}
 
-			// Crash after 10 total failures
-			if failure_count >= 10 {
-				error!("[⛔] Failed to create OAuth client (mobile + generic)");
-				std::process::exit(1);
+			if failure_count >= max_failures {
+				return Err("Failed to create OAuth client (mobile + generic)".to_string());
 			}
 
 			tokio::time::sleep(OAUTH_TIMEOUT).await;
+		}
+	}
+
+	/// Create an OAuth client for startup. If Reddit is unavailable, keep the
+	/// server alive and retry in the background instead of exiting.
+	pub(crate) async fn bootstrap() -> Self {
+		match Self::try_new(3).await {
+			Ok(oauth) => oauth,
+			Err(err) => {
+				warn!("[⚠️] Starting Redlib without a Reddit OAuth token: {}", err);
+				Self::unavailable()
+			}
 		}
 	}
 
@@ -162,11 +186,12 @@ impl From<serde_json::Error> for AuthError {
 pub async fn token_daemon() {
 	// Monitor for refreshing token
 	loop {
-		// Get expiry time - be sure to not hold the read lock
-		let expires_in = { OAUTH_CLIENT.load_full().expires_in };
-
-		// sleep for the expiry time minus 2 minutes
-		let duration = Duration::from_secs(expires_in - 120);
+		let client = OAUTH_CLIENT.load_full();
+		let duration = if client.is_authenticated() {
+			Duration::from_secs(client.expires_in.saturating_sub(120).max(30))
+		} else {
+			Duration::from_secs(30)
+		};
 
 		info!("[⏳] Waiting for {duration:?} seconds before refreshing OAuth token...");
 
@@ -188,9 +213,15 @@ pub async fn force_refresh_token() {
 	}
 
 	trace!("Rolling over refresh token. Current rate limit: {}", OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst));
-	let new_client = Oauth::new().await;
-	OAUTH_CLIENT.swap(new_client.into());
-	OAUTH_RATELIMIT_REMAINING.store(99, Ordering::SeqCst);
+	match Oauth::try_new(10).await {
+		Ok(new_client) => {
+			OAUTH_CLIENT.swap(new_client.into());
+			OAUTH_RATELIMIT_REMAINING.store(99, Ordering::SeqCst);
+		}
+		Err(err) => {
+			warn!("[⚠️] OAuth refresh failed, keeping the existing client: {}", err);
+		}
+	}
 	OAUTH_IS_ROLLING_OVER.store(false, Ordering::SeqCst);
 }
 

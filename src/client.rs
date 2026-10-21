@@ -18,6 +18,7 @@ use std::{io, result::Result};
 
 use crate::dbg_msg;
 use crate::oauth::{force_refresh_token, token_daemon, Oauth, OauthBackendImpl};
+use crate::offline_cache;
 use crate::server::RequestExt;
 use crate::utils::{format_url, Post};
 
@@ -34,20 +35,28 @@ pub static HTTPS_CONNECTOR: LazyLock<HttpsConnector<HttpConnector>> = LazyLock::
 	hyper_rustls::HttpsConnectorBuilder::new()
 		.with_tls_config(
 			rustls::ClientConfig::builder()
-				// These are the Firefox 145.0 cipher suite,
-				// minus the suites missing forward-secrecy support,
-				// in the same order.
-				// https://github.com/redlib-org/redlib/issues/446#issuecomment-3609306592
+				// These are the cipher suites that the Reddit Android app uses.
 				.with_cipher_suites(&[
-					rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
 					rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+					rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
 					rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
 					rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 					rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-					rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-					rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 					rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 					rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+					rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+					rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+					// Unsupported ciphers that rustls intentionally excludes.
+					// The Android client still advertises them, but keeping the
+					// supported subset in the same order gets us much closer to
+					// its TLS fingerprint.
+					//
+					// rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+					// rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+					// rustls::cipher_suite::TLS_RSA_WITH_AES_128_GCM_SHA256,
+					// rustls::cipher_suite::TLS_RSA_WITH_AES_256_GCM_SHA384,
+					// rustls::cipher_suite::TLS_RSA_WITH_AES_128_CBC_SHA,
+					// rustls::cipher_suite::TLS_RSA_WITH_AES_256_CBC_SHA,
 				])
 				// .with_safe_default_cipher_suites()
 				.with_safe_default_kx_groups()
@@ -57,6 +66,8 @@ pub static HTTPS_CONNECTOR: LazyLock<HttpsConnector<HttpConnector>> = LazyLock::
 				.with_no_client_auth(),
 		)
 		.https_only()
+		// Reddit's Android client advertises both ALPN values.
+		.enable_http1()
 		.enable_http2()
 		.build()
 });
@@ -64,7 +75,7 @@ pub static HTTPS_CONNECTOR: LazyLock<HttpsConnector<HttpConnector>> = LazyLock::
 pub static CLIENT: LazyLock<Client<HttpsConnector<HttpConnector>>> = LazyLock::new(|| Client::builder().build::<_, Body>(HTTPS_CONNECTOR.clone()));
 
 pub static OAUTH_CLIENT: LazyLock<ArcSwap<Oauth>> = LazyLock::new(|| {
-	let client = block_on(Oauth::new());
+	let client = block_on(Oauth::bootstrap());
 	tokio::spawn(token_daemon());
 	ArcSwap::new(client.into())
 });
@@ -398,6 +409,20 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 		// eprintln!("{} - {}: {}", url, msg, e);
 		Err(format!("{msg}: {e} | {path}"))
 	};
+	let cached_json = |reason: &str| -> Option<Value> {
+		let cached_body = offline_cache::load_json(&path)?;
+		match serde_json::from_str::<Value>(&cached_body) {
+			Ok(value) => {
+				warn!("Serving cached Reddit JSON for {} after {}", path, reason);
+				Some(value)
+			}
+			Err(error) => {
+				warn!("Failed to parse cached Reddit JSON for {}: {}", path, error);
+				None
+			}
+		}
+	};
+	let cached_or = |reason: &str, fallback: Result<Value, String>| cached_json(reason).map_or(fallback, Ok);
 
 	// First, handle rolling over the OAUTH_CLIENT if need be.
 	let current_rate_limit = OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst);
@@ -406,7 +431,7 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 		warn!("Rate limit {current_rate_limit} is low. Spawning force_refresh_token()");
 		tokio::spawn(force_refresh_token());
 	}
-	OAUTH_RATELIMIT_REMAINING.fetch_sub(1, Ordering::SeqCst);
+	let _ = OAUTH_RATELIMIT_REMAINING.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| Some(value.saturating_sub(1)));
 
 	// Fetch the url...
 	match reddit_get(path.clone(), quarantine).await {
@@ -433,29 +458,23 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 				None
 			};
 
-			// asynchronously aggregate the chunks of the body
-			match hyper::body::aggregate(response).await {
-				Ok(body) => {
-					let has_remaining = body.has_remaining();
-
-					if !has_remaining {
-						// Rate limited, so spawn a force_refresh_token()
+			match hyper::body::to_bytes(response).await {
+				Ok(body_bytes) => {
+					if body_bytes.is_empty() {
 						tokio::spawn(force_refresh_token());
-						return match reset {
-							Some(val) => Err(format!(
-								"Reddit rate limit exceeded. Try refreshing in a few seconds.\
-								 Rate limit will reset in: {val}"
-							)),
-							None => Err("Reddit rate limit exceeded".to_string()),
-						};
+						return cached_or(
+							"an empty Reddit response",
+							match reset {
+								Some(val) => Err(format!("Reddit rate limit exceeded. Try refreshing in a few seconds. Rate limit will reset in: {val}")),
+								None => Err("Reddit rate limit exceeded".to_string()),
+							},
+						);
 					}
 
-					// Parse the response from Reddit as JSON
-					match serde_json::from_reader(body.reader()) {
-						Ok(value) => {
-							let json: Value = value;
+					let body_text = String::from_utf8_lossy(&body_bytes).to_string();
 
-							// If user is suspended
+					match serde_json::from_slice::<Value>(&body_bytes) {
+						Ok(json) => {
 							if let Some(data) = json.get("data") {
 								if let Some(is_suspended) = data.get("is_suspended").and_then(Value::as_bool) {
 									if is_suspended {
@@ -464,51 +483,49 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 								}
 							}
 
-							// If Reddit returned an error
 							if json["error"].is_i64() {
-								// OAuth token has expired; http status 401
 								if json["message"] == "Unauthorized" {
 									error!("Forcing a token refresh");
-									let () = force_refresh_token().await;
-									return Err("OAuth token has expired. Please refresh the page!".to_string());
+									tokio::spawn(force_refresh_token());
+									return cached_or("an expired OAuth token", Err("OAuth token has expired. Please refresh the page!".to_string()));
 								}
 
-								// Handle quarantined
 								if json["reason"] == "quarantined" {
 									return Err("quarantined".into());
 								}
-								// Handle gated
 								if json["reason"] == "gated" {
 									return Err("gated".into());
 								}
-								// Handle private subs
 								if json["reason"] == "private" {
 									return Err("private".into());
 								}
-								// Handle banned subs
 								if json["reason"] == "banned" {
 									return Err("banned".into());
 								}
 
-								Err(format!("Reddit error {} \"{}\": {} | {path}", json["error"], json["reason"], json["message"]))
-							} else {
-								Ok(json)
+								return cached_or(
+									"a Reddit API error",
+									Err(format!("Reddit error {} \"{}\": {} | {path}", json["error"], json["reason"], json["message"])),
+								);
 							}
+
+							offline_cache::store_json(&path, &body_text);
+							Ok(json)
 						}
 						Err(e) => {
 							error!("Got an invalid response from reddit {e}. Status code: {status}");
 							if status.is_server_error() {
-								Err("Reddit is having issues, check if there's an outage".to_string())
+								cached_or("a Reddit server error", Err("Reddit is having issues, check if there's an outage".to_string()))
 							} else {
-								err("Failed to parse page JSON data", e.to_string(), path)
+								cached_or("an invalid Reddit JSON response", err("Failed to parse page JSON data", e.to_string(), path.clone()))
 							}
 						}
 					}
 				}
-				Err(e) => err("Failed receiving body from Reddit", e.to_string(), path),
+				Err(e) => cached_or("a failed Reddit body read", err("Failed receiving body from Reddit", e.to_string(), path.clone())),
 			}
 		}
-		Err(e) => err("Couldn't send request to Reddit", e, path),
+		Err(e) => cached_or("a failed Reddit request", err("Couldn't send request to Reddit", e, path.clone())),
 	}
 }
 

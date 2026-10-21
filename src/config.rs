@@ -107,6 +107,12 @@ pub struct Config {
 	#[serde(alias = "LIBREDDIT_PREFERENCES_PATH")]
 	pub(crate) preferences_path: Option<String>,
 
+	#[serde(rename = "REDLIB_JSON_CACHE_PATH")]
+	pub(crate) json_cache_path: Option<String>,
+
+	#[serde(rename = "REDLIB_JSON_CACHE_MAX_AGE_SECS")]
+	pub(crate) json_cache_max_age_secs: Option<String>,
+
 	#[serde(rename = "REDLIB_FULL_URL")]
 	pub(crate) full_url: Option<String>,
 
@@ -159,6 +165,8 @@ impl Config {
 			pushshift: parse("REDLIB_PUSHSHIFT_FRONTEND"),
 			enable_rss: parse("REDLIB_ENABLE_RSS"),
 			preferences_path: parse("REDLIB_PREFERENCES_PATH"),
+			json_cache_path: parse("REDLIB_JSON_CACHE_PATH"),
+			json_cache_max_age_secs: parse("REDLIB_JSON_CACHE_MAX_AGE_SECS"),
 			full_url: parse("REDLIB_FULL_URL"),
 			default_remove_default_feeds: parse("REDLIB_DEFAULT_REMOVE_DEFAULT_FEEDS"),
 		}
@@ -190,6 +198,8 @@ fn get_setting_from_config(name: &str, config: &Config) -> Option<String> {
 		"REDLIB_PUSHSHIFT_FRONTEND" => config.pushshift.clone(),
 		"REDLIB_ENABLE_RSS" => config.enable_rss.clone(),
 		"REDLIB_PREFERENCES_PATH" => config.preferences_path.clone(),
+		"REDLIB_JSON_CACHE_PATH" => config.json_cache_path.clone(),
+		"REDLIB_JSON_CACHE_MAX_AGE_SECS" => config.json_cache_max_age_secs.clone(),
 		"REDLIB_FULL_URL" => config.full_url.clone(),
 		"REDLIB_DEFAULT_REMOVE_DEFAULT_FEEDS" => config.default_remove_default_feeds.clone(),
 		_ => None,
@@ -270,6 +280,12 @@ fn test_default_filters() {
 #[sealed_test(env = [("REDLIB_PREFERENCES_PATH", "/tmp/redlib-prefs.txt")])]
 fn test_preferences_path() {
 	assert_eq!(get_setting("REDLIB_PREFERENCES_PATH"), Some("/tmp/redlib-prefs.txt".into()));
+}
+
+#[test]
+#[sealed_test(env = [("REDLIB_JSON_CACHE_PATH", "/tmp/redlib-cache")])]
+fn test_json_cache_path() {
+	assert_eq!(get_setting("REDLIB_JSON_CACHE_PATH"), Some("/tmp/redlib-cache".into()));
 }
 
 #[test]

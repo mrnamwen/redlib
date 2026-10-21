@@ -128,6 +128,8 @@ impl InstanceInfo {
 				["Pushshift frontend", &convert(&self.config.pushshift)],
 				["RSS enabled", &convert(&self.config.enable_rss)],
 				["Preferences path", &convert(&self.config.preferences_path)],
+				["JSON cache path", &convert(&self.config.json_cache_path)],
+				["JSON cache max age", &convert(&self.config.json_cache_max_age_secs)],
 				["Full URL", &convert(&self.config.full_url)],
 				["Remove default feeds", &convert(&self.config.default_remove_default_feeds)],
 				//TODO: fallback to crate::config::DEFAULT_PUSHSHIFT_FRONTEND
@@ -170,6 +172,8 @@ impl InstanceInfo {
 					SFW only: {:?}\n
 					Pushshift frontend: {:?}\n
 					RSS enabled: {:?}\n
+					JSON cache path: {:?}\n
+					JSON cache max age: {:?}\n
 					Full URL: {:?}\n
 					Remove default feeds: {:?}\n
 	                Config:\n
@@ -199,6 +203,8 @@ impl InstanceInfo {
 					self.config.sfw_only,
 					self.config.pushshift,
 					self.config.enable_rss,
+					self.config.json_cache_path,
+					self.config.json_cache_max_age_secs,
 					self.config.full_url,
 					self.config.default_remove_default_feeds,
 					self.config.banner,

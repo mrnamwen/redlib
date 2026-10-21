@@ -4,6 +4,7 @@ pub mod duplicates;
 pub mod instance_info;
 pub mod oauth;
 pub mod oauth_resources;
+pub mod offline_cache;
 pub mod post;
 pub mod search;
 pub mod server;

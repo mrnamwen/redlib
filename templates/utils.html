@@ -217,8 +217,61 @@
 </li>
 {% endmacro %}
 
+{% macro listing_preview_media(post) -%}
+<div class="listing_preview_media">
+	{% if post.post_type == "image" %}
+	<div class="post_media_content">
+		<a href="{{ post.media.url }}" class="post_media_image {% if post.media.height < post.media.width*2 %}short{% endif %}">
+			{% if post.media.height == 0 || post.media.width == 0 %}
+			<img width="100%" height="100%" loading="lazy" alt="Post image" src="{{ post.media.url }}"/>
+			{% else %}
+			<svg
+				width="{{ post.media.width }}px"
+				height="{{ post.media.height }}px"
+				xmlns="http://www.w3.org/2000/svg">
+					<image width="100%" height="100%" href="{{ post.media.url }}"/>
+					<desc>
+						<img loading="lazy" alt="Post image" src="{{ post.media.url }}"/>
+					</desc>
+			</svg>
+			{% endif %}
+		</a>
+	</div>
+	{% else if post.post_type == "video" || post.post_type == "gif" %}
+	{% if prefs.use_hls == "on" && !post.media.alt_url.is_empty() %}
+	<div class="post_media_content">
+		<video class="post_media_video short{% if prefs.autoplay_videos == "on" %} hls_autoplay{% endif %}" {% if post.media.width > 0 && post.media.height > 0 %}width="{{ post.media.width }}" height="{{ post.media.height }}"{% endif %} poster="{{ post.media.poster }}" controls preload="none">
+			<source src="{{ post.media.alt_url }}" type="application/vnd.apple.mpegurl" />
+			<source src="{{ post.media.url }}" type="video/mp4" />
+		</video>
+	</div>
+	{% else %}
+	<div class="post_media_content">
+		<video class="post_media_video short" src="{{ post.media.url }}" {% if post.media.width > 0 && post.media.height > 0 %}width="{{ post.media.width }}" height="{{ post.media.height }}"{% endif %} poster="{{ post.media.poster }}" preload="none" controls {% if prefs.autoplay_videos == "on" %}autoplay{% endif %}><a href={{ post.media.url }}>Video</a></video>
+	</div>
+	{% endif %}
+	{% else if post.post_type == "gallery" %}
+	<div class="gallery">
+	{% for image in post.gallery -%}
+		<figure>
+			<a href="{{ image.url }}"><img loading="lazy" alt="Gallery image" src="{{ image.url }}"/></a>
+			<figcaption>
+				<p>{{ image.caption }}</p>
+				{% if image.outbound_url.len() > 0 %}
+				<p><a class="outbound_url" href="{{ image.outbound_url }}" rel="nofollow">{{ image.outbound_url }}</a>
+				{% endif %}
+			</figcaption>
+		</figure>
+	{%- endfor %}
+	</div>
+	{% endif %}
+</div>
+{%- endmacro %}
+
 {% macro post_in_list(post) -%}
 {% set post_should_be_blurred = (post.flags.nsfw && prefs.blur_nsfw=="on") || (post.flags.spoiler && prefs.blur_spoiler=="on") -%}
+{% set can_inline_preview = post.post_type == "image" || post.post_type == "gif" || post.post_type == "video" || post.post_type == "gallery" -%}
+{% set supports_listing_preview = can_inline_preview && !(prefs.layout.is_empty() || prefs.layout == "card") -%}
 <div class="post{% if post.flags.stickied %} stickied{% endif %}{% if post_should_be_blurred %} post_blurred{% endif %}" id="{{ post.id }}">
 	<p class="post_header">
 		{% let community -%}
@@ -313,11 +366,29 @@
 	<div class="post_body post_preview">
 		{{ post.body|safe }}
 	</div>
+	{% if supports_listing_preview %}
+	<div class="listing_preview_panel" id="preview-{{ post.id }}" data-size="medium" hidden>
+		<div class="listing_preview_toolbar">
+			<span class="listing_preview_label">Inline media</span>
+			<div class="listing_preview_controls">
+				<button class="listing_preview_resize" data-step="-1" type="button">Smaller</button>
+				<button class="listing_preview_resize" data-step="1" type="button">Larger</button>
+				<button class="listing_preview_reset" type="button">Reset</button>
+			</div>
+		</div>
+		{% call listing_preview_media(post) %}
+	</div>
+	{% endif %}
 
 	{% call poll(post) %}
 
 	<div class="post_footer">
-		<a href="{{ post.permalink }}" class="post_comments" title="{{ post.comments.1 }} {% if post.comments.1 == "1" %}comment{% else %}comments{% endif %}">{{ post.comments.0 }} {% if post.comments.1 == "1" %}comment{% else %}comments{% endif %}</a>
+		<div class="post_footer_actions">
+			{% if supports_listing_preview %}
+			<button class="listing_preview_toggle" type="button" aria-expanded="false" aria-controls="preview-{{ post.id }}">Preview</button>
+			{% endif %}
+			<a href="{{ post.permalink }}" class="post_comments" title="{{ post.comments.1 }} {% if post.comments.1 == "1" %}comment{% else %}comments{% endif %}">{{ post.comments.0 }} {% if post.comments.1 == "1" %}comment{% else %}comments{% endif %}</a>
+		</div>
 	</div>
 </div>
 {%- endmacro %}
