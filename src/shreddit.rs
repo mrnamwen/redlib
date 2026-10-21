@@ -332,6 +332,16 @@ mod tests {
 		assert_eq!(parse_path("/r/linux/hot.json"), None);
 	}
 
+	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "hits live Reddit"]
+	async fn test_thread_scrape_live() {
+		let value = thread("/r/politics/comments/1x9xx9e/.json?raw_json=1", false).await.unwrap();
+		let comments = value[1]["data"]["children"].as_array().unwrap();
+		assert!(!comments.is_empty(), "scraper returned no comments");
+		assert_eq!(comments[0]["kind"], "t1");
+		assert!(!comments[0]["data"]["body_html"].as_str().unwrap_or_default().is_empty());
+	}
+
 	#[test]
 	fn test_parse_comments() {
 		let html = r#"
