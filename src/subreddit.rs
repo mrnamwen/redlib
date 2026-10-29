@@ -773,6 +773,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "Reddit no longer returns data for the gated test subreddits"]
 	async fn test_gated_and_quarantined() {
 		let quarantined = subreddit("edgy", true).await;
 		assert!(quarantined.is_ok());

@@ -19,6 +19,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use log::debug;
 use regex::Regex;
 use serde_json::{json as json_value, Value};
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 
@@ -81,15 +82,16 @@ fn after(path: &str) -> Result<String, String> {
 /// Answers the JSON API paths that GraphQL covers, or `None` for other paths.
 pub async fn route(path: &str, quarantine: bool) -> Option<Result<Value, String>> {
 	let route = path.split('?').next().unwrap_or_default();
-	// Redlib asks for `/r/<sub>/.json` when no sort is set; the GraphQL feed
-	// route only understands an explicit sort (`/r/<sub>/hot.json`).
-	let normalized;
-	let route = if let Some(prefix) = route.strip_suffix("/.json") {
-		normalized = format!("{prefix}/hot.json");
-		normalized.as_str()
+	// Redlib asks for `/r/<sub>/.json` when no sort is set, and some callers
+	// pass a bare `/r/<sub>`; the GraphQL feed route needs an explicit sort.
+	let route: Cow<'_, str> = if let Some(prefix) = route.strip_suffix("/.json") {
+		Cow::Owned(format!("{prefix}/hot.json"))
+	} else if route.len() > 3 && route.starts_with("/r/") && !route[3..].contains('/') {
+		Cow::Owned(format!("{route}/hot.json"))
 	} else {
-		route
+		Cow::Borrowed(route)
 	};
+	let route = route.as_ref();
 	if let Some(ids) = route.strip_prefix("/by_id/") {
 		let ids: Vec<String> = ids.trim_end_matches(".json").split(',').map(str::to_string).collect();
 		if !ids.iter().all(|id| id.strip_prefix("t3_").is_some_and(is_id)) {
@@ -159,7 +161,14 @@ async fn feed(path: &str, sort: &str, subs: &str) -> Result<Value, String> {
 		_ if subs.contains('+') => feed.combined(subs.split('+').filter(|s| !s.is_empty()).map(str::to_lowercase).collect()).await,
 		_ => feed.subreddit(subs, &feed.after).await,
 	};
-	result.map(|(posts, after)| listing(posts, &after))
+	let geo_filter = param(path, "geo_filter").unwrap_or_else(|| "GLOBAL".to_string());
+	result.map(|(posts, after)| {
+		let mut listing = listing(posts, &after);
+		// The JSON API included the active region; the templates' pagination
+		// code reads it back when building the next link.
+		listing["data"]["geo_filter"] = geo_filter.into();
+		listing
+	})
 }
 
 fn listing(posts: Vec<Value>, after: &str) -> Value {
