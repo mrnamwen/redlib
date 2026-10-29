@@ -461,18 +461,22 @@ Redlib [supports](https://docs.rs/wreq/latest/wreq/#proxies) proxy usage using t
 
 ## Reddit blocking workarounds
 
-Since 2026-10-20 Reddit rejects anonymous app-only OAuth tokens on the
-`/comments/` JSON routes with its "You've been blocked by network security"
-HTML page, while listings keep working. Redlib works around this in two layers:
+Reddit has progressively closed anonymous access to its JSON API:
 
-1. The slash after `comments` is percent-encoded (`/r/<sub>/comments%2F<id>`),
-   which reaches the same handler without matching the edge rule.
-2. If that is blocked too, comment pages are built from Reddit's public
-   `shreddit` HTML fragments and converted into the usual JSON shape. The JSON
-   API is retried after an hour.
+- 2026-10-20: `/comments/` JSON routes were blocked; percent-encoding the route
+  separator worked for a week.
+- 2026-10-28: every anonymous JSON API route (feeds, `/by_id`, users, search,
+  wiki) started returning Reddit's "You've been blocked by network security"
+  HTML page, including the encoded paths.
 
-Both workarounds are best-effort: Reddit is moving comment data toward
-logged-in sessions, so these may need revisiting if the edge rules change.
+Redlib now answers those routes from the Android app's persisted GraphQL
+operations (`gql.rs` for comments, `gql_feed.rs` for feeds/posts/everything
+else) and converts the responses back into the JSON shapes the existing
+handlers and templates consume. The shreddit HTML scraper remains only as a
+comment-page fallback if a GraphQL request is blocked.
+
+GraphQL is available while the anonymous token lasts; Reddit has announced the
+legacy data API shutdown for March 2027, so this will need revisiting again.
 
 ## Security
 

@@ -69,7 +69,14 @@ pub async fn community(req: Request<Body>) -> Result<Response<Body>, String> {
 	let subscribed = setting(&req, "subscriptions");
 	let front_page = setting(&req, "front_page");
 	let remove_default_feeds = setting(&req, "remove_default_feeds") == "on";
-	let post_sort = setting(&req, "post_sort");
+	let post_sort = {
+		let value = setting(&req, "post_sort");
+		if value.is_empty() {
+			"hot".to_string()
+		} else {
+			value
+		}
+	};
 	let sort = req.param("sort").unwrap_or_else(|| req.param("id").unwrap_or(post_sort));
 
 	let sub_name = req.param("sub").unwrap_or(if front_page == "default" || front_page.is_empty() {

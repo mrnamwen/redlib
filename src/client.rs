@@ -2,7 +2,7 @@ use crate::dbg_msg;
 use crate::oauth::{force_refresh_token, token_daemon, Oauth, OauthBackendImpl};
 use crate::offline_cache;
 use crate::server::RequestExt;
-use crate::utils::{format_url, param, Post};
+use crate::utils::{format_url, Post};
 use arc_swap::ArcSwap;
 use cached::proc_macro::cached;
 use futures_lite::future::block_on;
@@ -13,7 +13,7 @@ use percent_encoding::{percent_encode, CONTROLS};
 use serde_json::Value;
 use std::result::Result;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::LazyLock;
 use wreq::redirect::Policy;
 use wreq::{header as wreq_header, Client as WreqClient, EmulationFactory, Method, Response as WreqResponse};
@@ -40,10 +40,21 @@ pub static OAUTH_RATELIMIT_REMAINING: AtomicU16 = AtomicU16::new(99);
 
 pub static OAUTH_IS_ROLLING_OVER: AtomicBool = AtomicBool::new(false);
 
-/// Unix time until which the `/comments/` JSON API is assumed blocked. While
-/// blocked, comment pages are served from Reddit's shreddit HTML fragments.
-static COMMENTS_API_BLOCKED_UNTIL: AtomicU64 = AtomicU64::new(0);
-const COMMENTS_API_RETRY_SECS: u64 = 3600;
+/// Lower the local quota estimate by one, without wrapping below zero.
+pub fn burn_rate_limit_unit() {
+	OAUTH_RATELIMIT_REMAINING
+		.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| Some(value.saturating_sub(1)))
+		.ok();
+}
+
+/// Rolls the OAuth token over in the background when its rate limit runs low.
+pub fn roll_over_if_low() {
+	let current_rate_limit = OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst);
+	if current_rate_limit < 10 && !OAUTH_IS_ROLLING_OVER.load(Ordering::SeqCst) {
+		warn!("Rate limit {current_rate_limit} is low. Spawning force_refresh_token()");
+		tokio::spawn(force_refresh_token());
+	}
+}
 
 const URL_PAIRS: [(&str, &str); 2] = [
 	(ALTERNATIVE_REDDIT_URL_BASE, ALTERNATIVE_REDDIT_URL_BASE_HOST),
@@ -353,40 +364,39 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 	};
 	let cached_or = |reason: &str, fallback: Result<Value, String>| cached_json(reason).map_or(fallback, Ok);
 
-	// While the comments API is blocked, skip straight to scraping instead of
-	// wasting a request. Cursors come from scraped pages and only the scraper
-	// understands them.
+	// Reddit blocks the anonymous JSON API; comments and everything else come
+	// from the Android app's persisted GraphQL operations instead.
 	let is_comments = path.contains("/comments/");
-	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-	if is_comments && (param(&path, "cursor").is_some() || now < COMMENTS_API_BLOCKED_UNTIL.load(Ordering::Relaxed)) {
-		return Box::pin(crate::shreddit::thread(&path, quarantine)).await;
+	if is_comments {
+		match Box::pin(crate::gql::thread(&path, quarantine)).await {
+			Ok(value) => {
+				offline_cache::store_json(&path, &value.to_string());
+				return Ok(value);
+			}
+			Err(err) if err.contains("blocked") || err.contains("request failed") || err.contains("403") => {
+				warn!("GraphQL comments failed ({}), falling back to shreddit HTML", err);
+				return Box::pin(crate::shreddit::thread(&path, quarantine)).await;
+			}
+			Err(err) => return Err(err),
+		}
+	}
+	if let Some(result) = Box::pin(crate::gql_feed::route(&path, quarantine)).await {
+		if let Ok(value) = &result {
+			offline_cache::store_json(&path, &value.to_string());
+		}
+		return result;
 	}
 
 	// First, handle rolling over the OAUTH_CLIENT if need be.
 	let current_rate_limit = OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst);
 	let is_rolling_over = OAUTH_IS_ROLLING_OVER.load(Ordering::SeqCst);
-	if current_rate_limit < 10 && !is_rolling_over {
-		warn!("Rate limit {current_rate_limit} is low. Spawning force_refresh_token()");
-		tokio::spawn(force_refresh_token());
-	}
-	let _ = OAUTH_RATELIMIT_REMAINING.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| Some(value.saturating_sub(1)));
+	roll_over_if_low();
+	burn_rate_limit_unit();
 
 	// Fetch the url...
 	match reddit_get(path.clone(), quarantine).await {
 		Ok(response) => {
 			let status = response.status();
-
-			// Reddit's network security block is an HTML page; private/quarantined
-			// subs answer with JSON 403s instead.
-			let is_html = response
-				.headers()
-				.get(wreq_header::CONTENT_TYPE)
-				.is_some_and(|value| value.as_bytes().starts_with(b"text/html"));
-			if is_comments && status == 403 && is_html {
-				warn!("Comments API blocked, scraping comments for the next {COMMENTS_API_RETRY_SECS}s");
-				COMMENTS_API_BLOCKED_UNTIL.store(now + COMMENTS_API_RETRY_SECS, Ordering::Relaxed);
-				return Box::pin(crate::shreddit::thread(&path, quarantine)).await;
-			}
 
 			let reset: Option<String> = if let (Some(remaining), Some(reset), Some(used)) = (
 				response.headers().get("x-ratelimit-remaining").and_then(|val| val.to_str().ok().map(|s| s.to_string())),
@@ -530,9 +540,9 @@ pub async fn rate_limit_check() -> Result<(), String> {
 
 	// First, check a subreddit.
 	self_check("reddit").await?;
-	// This will reduce the rate limit to 99. Assert this check.
-	if OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst) != 99 {
-		return Err(format!("Rate limit check 1 failed: expected 99, got {}", OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst)));
+	// One GraphQL request, against GraphQL's rate limit of 600 per token.
+	if OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst) != 599 {
+		return Err(format!("Rate limit check 1 failed: expected 599, got {}", OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst)));
 	}
 	// Now, we switch out the OAuth client.
 	// This checks for the IP rate limit association.
@@ -540,8 +550,8 @@ pub async fn rate_limit_check() -> Result<(), String> {
 	// Now, check a new sub to break cache.
 	self_check("rust").await?;
 	// Again, assert the rate limit check.
-	if OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst) != 99 {
-		return Err(format!("Rate limit check 2 failed: expected 99, got {}", OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst)));
+	if OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst) != 599 {
+		return Err(format!("Rate limit check 2 failed: expected 599, got {}", OAUTH_RATELIMIT_REMAINING.load(Ordering::SeqCst)));
 	}
 
 	Ok(())
