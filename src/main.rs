@@ -292,6 +292,7 @@ async fn main() {
 
 	app.at("/user/[deleted]").get(|req| error(req, "User has deleted their account").boxed());
 	app.at("/user/:name.rss").get(|r| user::rss(r).boxed());
+	app.at("/user/:name/.rss").get(|r| user::rss(r).boxed());
 	app.at("/user/:name").get(|r| user::profile(r).boxed());
 	app.at("/user/:name/:listing").get(|r| user::profile(r).boxed());
 	app.at("/user/:name/comments/:id").get(|r| post::item(r).boxed());
@@ -306,6 +307,8 @@ async fn main() {
 
 	// RSS Subscriptions
 	app.at("/r/:sub.rss").get(|r| subreddit::rss(r).boxed());
+	app.at("/r/:sub/.rss").get(|r| subreddit::rss(r).boxed());
+	app.at("/r/:sub/:sort.rss").get(|r| subreddit::rss(r).boxed());
 
 	// Subreddit services
 	app

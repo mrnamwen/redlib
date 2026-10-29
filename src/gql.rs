@@ -46,14 +46,22 @@ pub async fn thread(path: &str, quarantine: bool) -> Result<Value, String> {
 		// The suggested sort comes with the post
 		let (post, duplicates) = post.await;
 		let post = post?;
-		let suggested = post["data"]["children"][0]["data"]["suggested_sort"].as_str().filter(|s| sort_type(s).is_some());
+		let suggested = post["data"]["children"]
+			.as_array()
+			.and_then(|children| children.first())
+			.and_then(|post| post["data"]["suggested_sort"].as_str())
+			.filter(|s| sort_type(s).is_some());
 		let sort = suggested.unwrap_or("confidence").to_string();
 		let comments = comments(&id, comment_id.as_deref(), path, &sort).await;
 		(Ok(post), duplicates, sort, comments)
 	};
 	let mut post = post?;
+	// An unknown post ID comes back as an empty listing rather than an error.
+	let Some(first) = post["data"]["children"].as_array_mut().and_then(|children| children.first_mut()) else {
+		return Err("Post not found".to_string());
+	};
 	// For the post's "duplicates" link
-	post["data"]["children"][0]["data"]["num_duplicates"] = duplicates.into();
+	first["data"]["num_duplicates"] = duplicates.into();
 	let mut comments = listing(comments?);
 	comments["data"]["sort"] = sort.into();
 	Ok(json_value!([post, comments]))
@@ -87,7 +95,10 @@ async fn comments(id: &str, comment_id: Option<&str>, path: &str, sort: &str) ->
 		Some(comment_id) if context > 0 && variables["after"].is_null() => {
 			let (mut depth, mut branch) = focused_branch(&comments, comment_id).ok_or("Comment not found")?;
 			while depth > context {
-				branch = branch["data"]["replies"]["data"]["children"][0].take();
+				let Some(next) = branch["data"]["replies"]["data"]["children"].as_array_mut().and_then(|children| children.first_mut()) else {
+					break;
+				};
+				branch = next.take();
 				depth -= 1;
 			}
 			Ok(vec![branch])
