@@ -478,6 +478,11 @@ comment-page fallback if a GraphQL request is blocked.
 GraphQL is available while the anonymous token lasts; Reddit has announced the
 legacy data API shutdown for March 2027, so this will need revisiting again.
 
+Known gaps after the switch: comment search (`?type=comment`) still uses post
+search, GraphQL feeds have no `websocket_url`, and the popular `geo_filter` is
+echoed but not applied. Comment pages fall back to the shreddit scraper if a
+GraphQL request is blocked.
+
 ## Security
 
 This project uses [BoringSSL](https://boringssl.googlesource.com/boringssl/), built from source with patches from

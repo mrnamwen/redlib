@@ -40,3 +40,16 @@ popular, all, users, search, wiki, duplicates all 200.
 - `.rss` listings still work (200) but lack scores/media; not used.
 - Shreddit comment fragments still work via wreq (200, ~313 comments), retained
   as a fallback.
+
+## Final production state (2026-10-29)
+
+- Anonymous JSON: dead for every IP tested (home + server), with or without a
+  freshly minted app-only token, cookies from the HTML challenge, or alternate
+  hosts (`api.`, `old.`, `reddit.com`).
+- HTML: `www.reddit.com/r/<sub>/` is an 8 KB JS challenge; solving it (doubled
+  nonce + `jsc_token`, browser headers, cookie) returns real HTML with
+  `shreddit-post` elements, but does not unlock JSON. Not used by Redlib.
+- Shreddit comment fragments still return 200 via wreq; retained only as the
+  comment-page fallback.
+- GraphQL (`gql-fed.reddit.com`) with the full Android device headers works and
+  is now the primary backend.

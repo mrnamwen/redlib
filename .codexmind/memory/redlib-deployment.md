@@ -12,4 +12,10 @@
 ## 2026-10-29 state
 
 GraphQL backend (`src/gql.rs`, `src/gql_feed.rs`) is the data source; anonymous
-JSON is fully blocked. Local test ports used: 8097/8098; spare server port 8096.
+JSON is fully blocked. Production commit after the 2026-10-29 fix: `b8cc9c8`.
+Backups: `redlib.bak-20261029`, `redlib.bak-20261029b`, `redlib.bak-20261029c`.
+Local test ports: 8095/8097/8098; spare server port 8096.
+
+Known gaps: search `type=comment` still uses post search (no SearchComments
+persisted operation found); GraphQL feeds don't expose `websocket_url` or apply
+the popular `geo_filter`; shreddit HTML remains the comment fallback.
